@@ -1,0 +1,14 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Core1_CouplerEIP_AM243_Project",
+            "type": "ccs-debug",
+            "request": "launch",
+            "projectInfo": {
+                "name": "Core1_CouplerEIP_AM243_Project",
+                "resourceId": "/Core1_CouplerEIP_AM243_Project"
+            }
+        }
+    ]
+}
