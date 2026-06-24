@@ -38,7 +38,7 @@ void IPC_SharedInit(void)
         status == SystemP_SUCCESS);
 }
 
-void IPC_Lock(void)
+static void IPC_TakeSpinlock(void)
 {
     int32_t status;
 
@@ -59,6 +59,21 @@ void IPC_Lock(void)
             break;
         }
     }
+}
+
+static void IPC_ReleaseSpinlock(void)
+{
+    Spinlock_unlock(
+        spinlockBaseAddr,
+        SPINLOCK_LOCK_NUM);
+
+    SemaphoreP_post(
+        &mutexObj);
+}
+
+void IPC_Lock(void)
+{
+    IPC_TakeSpinlock();
 
     CacheP_inv(
         (void*)&gSharedMem,
@@ -73,10 +88,25 @@ void IPC_Unlock(void)
         sizeof(gSharedMem),
         CacheP_TYPE_ALL);
 
-    Spinlock_unlock(
-        spinlockBaseAddr,
-        SPINLOCK_LOCK_NUM);
+    IPC_ReleaseSpinlock();
+}
 
-    SemaphoreP_post(
-        &mutexObj);
+void IPC_LockIO(void)
+{
+    IPC_TakeSpinlock();
+
+    CacheP_inv(
+        (void*)&gSharedMem.io,
+        sizeof(gSharedMem.io),
+        CacheP_TYPE_ALL);
+}
+
+void IPC_UnlockIO(void)
+{
+    CacheP_wb(
+        (void*)&gSharedMem.io,
+        sizeof(gSharedMem.io),
+        CacheP_TYPE_ALL);
+
+    IPC_ReleaseSpinlock();
 }

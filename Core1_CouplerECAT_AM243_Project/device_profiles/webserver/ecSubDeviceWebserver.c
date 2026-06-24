@@ -276,14 +276,19 @@ void GS_APP_SyncOutputProcessImage(void)
         {
             case DO:
             {
-                gSharedMem.io.do_[m->doIndex] =
+                uint16_t newVal =
                     pWord[offset];
 
-                DEBUG_LOG(
-                    "[ECAT RX][DO] slot=%u node=%u value=0x%04X\r\n",
-                    slot,
-                    m->nodeId,
-                    pWord[offset]);
+                uint16_t idx =
+                    m->doIndex;
+
+                if(gSharedMem.io.do_[idx] != newVal)
+                {
+                    gSharedMem.io.do_[idx] = newVal;
+
+                    gSharedMem.io.doDirtyMask |=
+                        (1UL << idx);
+                }
 
                 break;
             }

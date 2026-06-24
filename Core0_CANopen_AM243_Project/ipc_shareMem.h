@@ -43,6 +43,8 @@ typedef struct
     int16_t ai[MAX_AI];
     int16_t ao[MAX_AO];
 
+    uint32_t doDirtyMask;
+
 } IO_DataModel;
 
 typedef struct
@@ -103,5 +105,6 @@ extern volatile ipc_shared_t gSharedMem;
 void IPC_SharedInit(void);
 void IPC_Lock(void);
 void IPC_Unlock(void);
-
+void IPC_LockIO(void);
+void IPC_UnlockIO(void);
 #endif

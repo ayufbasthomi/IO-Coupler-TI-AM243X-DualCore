@@ -40,6 +40,8 @@ static SemaphoreHandle_t gTxMutex;
 #define gTxCount            (gSharedMem.txCount)
 #define gRxCount            (gSharedMem.rxCount)
 
+static uint8_t gDoNodeMap[MAX_DO];
+
 static uint16_t DI_NODE_COUNT = 0;
 static uint16_t DO_NODE_COUNT = 0;
 static uint16_t AI_NODE_COUNT = 0;
@@ -524,35 +526,35 @@ static int CANopen_sendFrame(uint32_t cobId, uint8_t dlc, const uint8_t *data)
 
 static void CANopen_processOutputs(void)
 {
-    static uint16_t lastDo[MAX_DO];
+    uint32_t dirtyMask;
+    uint16_t values[MAX_DO];
 
-    IPC_Lock();
+    IPC_LockIO();
 
-    for(uint16_t i=0; i<gModuleCount; i++)
+    dirtyMask =
+        gSharedMem.io.doDirtyMask;
+
+    gSharedMem.io.doDirtyMask = 0;
+
+    memcpy(
+        values,
+        (void*)gSharedMem.io.do_,
+        sizeof(values));
+
+    IPC_UnlockIO();
+
+    while(dirtyMask)
     {
-        volatile CANopenModule *m = &gSharedMem.modules[i];
+        uint32_t bit =
+            __builtin_ctz(dirtyMask);
 
-        if(m->ioType != DO)
-            continue;
+        dirtyMask &=
+            ~(1UL << bit);
 
-        uint16_t val =
-            gSharedMem.io.do_[m->doIndex];
-
-        if(val != lastDo[m->doIndex])
-        {
-            IPC_Unlock();
-
-            CANopen_writeRPDO(
-                m->nodeId,
-                val);
-
-            IPC_Lock();
-
-            lastDo[m->doIndex] = val;
-        }
+        CANopen_writeRPDO(
+            gDoNodeMap[bit],
+            values[bit]);
     }
-
-    IPC_Unlock();
 }
 
 // static void CANopen_processCommandQueue(void)
@@ -600,11 +602,11 @@ static void CANopen_updateDI(uint8_t nid, uint16_t value)
         m->aoIndex,
         value);
 
-    IPC_Lock();
+    IPC_LockIO();
 
     gSharedMem.io.di[m->diIndex] = value;
 
-    IPC_Unlock();
+    IPC_UnlockIO();
 
     DEBUG_LOG(
         "[DI STORE] gIOData.di[%u] = 0x%04X\r\n",
@@ -619,11 +621,11 @@ static void CANopen_updateDO(uint8_t nid, uint16_t value)
     if(m == NULL)
         return;
 
-    IPC_Lock();
+    IPC_LockIO();
 
     gSharedMem.io.do_[m->doIndex] = value;
 
-    IPC_Unlock();
+    IPC_UnlockIO();
 }
 
 static void CANopen_updateAI(uint8_t nid, int16_t *values)
@@ -640,11 +642,11 @@ static void CANopen_updateAI(uint8_t nid, int16_t *values)
 
     if(xSemaphoreTake(gIODataMutex, portMAX_DELAY))
     {
-        IPC_Lock();
+        IPC_LockIO();
 
         memcpy((void*)&gSharedMem.io.ai[offset], values, 8*sizeof(int16_t));
 
-        IPC_Unlock();
+        IPC_UnlockIO();
 
         xSemaphoreGive(gIODataMutex);
     }
@@ -664,11 +666,11 @@ static void CANopen_updateAO(uint8_t nid, int16_t *values)
 
     if(xSemaphoreTake(gIODataMutex, portMAX_DELAY))
     {
-        IPC_Lock();
+        IPC_LockIO();
 
         memcpy((void*)&gSharedMem.io.ao[offset], values, 8*sizeof(int16_t));
 
-        IPC_Unlock();
+        IPC_UnlockIO();
 
         xSemaphoreGive(gIODataMutex);
     }
@@ -1216,6 +1218,7 @@ static void CANopen_initNetwork(void)
     memset((void*)gSharedMem.txModules, 0, sizeof(gSharedMem.txModules));
     memset((void*)gSharedMem.rxModules, 0, sizeof(gSharedMem.rxModules));
     memset((void*)gSharedMem.nodeData, 0, sizeof(gSharedMem.nodeData));
+    gSharedMem.io.doDirtyMask = 0;
     IPC_Unlock();
 
     DI_NODE_COUNT = 0;
@@ -1296,6 +1299,21 @@ static void CANopen_initNetwork(void)
         gModuleCount++;
         IPC_Unlock();
     }
+    IPC_Lock();
+
+    memset(gDoNodeMap, 0, sizeof(gDoNodeMap));
+    for(uint16_t i=0; i<gModuleCount; i++)
+    {
+        if(gSharedMem.modules[i].ioType == DO)
+        {
+            gDoNodeMap[
+                gSharedMem.modules[i].doIndex
+            ] =
+                gSharedMem.modules[i].nodeId;
+        }
+    }
+
+    IPC_Unlock();
 
     DEBUG_LOG("=== CANopen INIT DONE ===\r\n");
 }
