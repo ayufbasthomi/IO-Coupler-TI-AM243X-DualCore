@@ -23,6 +23,8 @@
 #define RTDY    7
 #define RTDB    8
 
+#define IPC_NOTIFY_CLIENT_ID  0
+
 enum io_device_type
 {
     IO_DEVICE_TYPE_DO16 = 0x01,
@@ -43,7 +45,7 @@ typedef struct
     int16_t ai[MAX_AI];
     int16_t ao[MAX_AO];
 
-    uint32_t doDirtyMask;
+    // uint32_t doDirtyMask;
 
 } IO_DataModel;
 

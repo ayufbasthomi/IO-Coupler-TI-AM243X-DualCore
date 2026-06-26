@@ -68,6 +68,7 @@
 #include <ESL_soeDemo.h>
 #include <ESL_eeprom.h>
 #include <ESL_version.h>
+#include <drivers/ipc_notify.h>
 #include "ipc_shareMem.h"
 
 #if !(defined FBTL_REMOTE) && !(defined DPRAM_REMOTE)
@@ -226,11 +227,7 @@ void GS_APP_SyncInputProcessImage(void)
             {
                 pWord[offset] = gSharedMem.io.di[m->diIndex];
 
-                DEBUG_LOG(
-                    "[ECAT TX][DI] slot=%u node=%u value=0x%04X\r\n",
-                    slot,
-                    m->nodeId,
-                    pWord[offset]);
+                DEBUG_LOG("[ECAT TX][DI] slot=%u node=%u value=0x%04X\r\n", slot, m->nodeId, pWord[offset]);
 
                 break;
             }
@@ -264,7 +261,9 @@ void GS_APP_SyncOutputProcessImage(void)
 {
     uint16_t *pWord = (uint16_t *)pdBuffer_output;
 
-    IPC_Lock();
+    uint32_t notifyMask = 0;
+
+    IPC_LockIO();
 
     for(uint16_t slot = 0; slot < gSharedMem.rxCount; slot++)
     {
@@ -276,18 +275,15 @@ void GS_APP_SyncOutputProcessImage(void)
         {
             case DO:
             {
-                uint16_t newVal =
-                    pWord[offset];
+                uint16_t idx = m->doIndex;
 
-                uint16_t idx =
-                    m->doIndex;
+                uint16_t newVal = pWord[offset];
 
                 if(gSharedMem.io.do_[idx] != newVal)
                 {
                     gSharedMem.io.do_[idx] = newVal;
 
-                    gSharedMem.io.doDirtyMask |=
-                        (1UL << idx);
+                    notifyMask |= (1UL << idx);
                 }
 
                 break;
@@ -305,7 +301,12 @@ void GS_APP_SyncOutputProcessImage(void)
         }
     }
 
-    IPC_Unlock();
+    IPC_UnlockIO();
+
+    if(notifyMask)
+    {
+        IpcNotify_sendMsg(CSL_CORE_ID_R5FSS0_0, IPC_NOTIFY_CLIENT_ID, notifyMask, 1);
+    }
 }
 
 /******************************************************************************

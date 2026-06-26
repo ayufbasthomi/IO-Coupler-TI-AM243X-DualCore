@@ -29,7 +29,7 @@ StackType_t gMcanTaskStack[MCAN_TASK_STACK] __attribute__((aligned(32)));
 TaskP_Object gMcanTask;
 
 SemaphoreHandle_t gIODataMutex = NULL;
-QueueHandle_t gCanTxQueue;
+// QueueHandle_t gCanTxQueue;
 
 static SemaphoreHandle_t gTxMutex;
 
@@ -41,6 +41,7 @@ static SemaphoreHandle_t gTxMutex;
 #define gRxCount            (gSharedMem.rxCount)
 
 static uint8_t gDoNodeMap[MAX_DO];
+static TaskHandle_t gOutputTaskHandle = NULL;
 
 static uint16_t DI_NODE_COUNT = 0;
 static uint16_t DO_NODE_COUNT = 0;
@@ -188,6 +189,15 @@ static void App_mcanConfig(void)
 }
 
 #if CAN_RX_MODE == CAN_RX_MODE_INTERRUPT
+static void ipcNotifyCallback(uint32_t remoteCoreId, uint16_t localClientId, uint32_t msgValue, int32_t crcStatus, void *args)
+{
+    BaseType_t hpw = pdFALSE;
+
+    xTaskNotifyFromISR(gOutputTaskHandle, msgValue, eSetBits, &hpw);
+
+    portYIELD_FROM_ISR(hpw);
+}
+
 static void App_mcanIntrISR(void *args)
 {
     uint32_t intrStatus;
@@ -524,36 +534,33 @@ static int CANopen_sendFrame(uint32_t cobId, uint8_t dlc, const uint8_t *data)
     return 0;
 }
 
-static void CANopen_processOutputs(void)
+static void CANopen_OutputTask(void *arg)
 {
     uint32_t dirtyMask;
-    uint16_t values[MAX_DO];
 
-    IPC_LockIO();
-
-    dirtyMask =
-        gSharedMem.io.doDirtyMask;
-
-    gSharedMem.io.doDirtyMask = 0;
-
-    memcpy(
-        values,
-        (void*)gSharedMem.io.do_,
-        sizeof(values));
-
-    IPC_UnlockIO();
-
-    while(dirtyMask)
+    for(;;)
     {
-        uint32_t bit =
-            __builtin_ctz(dirtyMask);
+        xTaskNotifyWait(0, 0xFFFFFFFF, &dirtyMask, portMAX_DELAY);
 
-        dirtyMask &=
-            ~(1UL << bit);
+        while(dirtyMask)
+        {
+            uint32_t bit = __builtin_ctz(dirtyMask);
 
-        CANopen_writeRPDO(
-            gDoNodeMap[bit],
-            values[bit]);
+            dirtyMask &= ~(1UL << bit);
+
+            IPC_LockIO();
+
+            uint16_t value = gSharedMem.io.do_[bit];
+
+            IPC_UnlockIO();
+
+            uint8_t nodeId = gDoNodeMap[bit];
+
+            if(nodeId)
+            {
+                CANopen_writeRPDO(nodeId, value);
+            }
+        }
     }
 }
 
@@ -1202,8 +1209,10 @@ static void CANopen_initNetwork(void)
         DEBUG_LOG("TX Mutex create failed\r\n");
         return;
     }
+    xTaskCreate(CANopen_OutputTask, "CAN_OUT", 4096, NULL, configMAX_PRIORITIES - 1, &gOutputTaskHandle);
+    IpcNotify_registerClient(IPC_NOTIFY_CLIENT_ID, ipcNotifyCallback, NULL);
 
-    gCanTxQueue = xQueueCreate(CAN_TX_QUEUE_SIZE, sizeof(CAN_TxMsg));
+    // gCanTxQueue = xQueueCreate(CAN_TX_QUEUE_SIZE, sizeof(CAN_TxMsg));
 
     /* ================= HARD RESET (IMPORTANT) ================= */
     memset(capability, 0, sizeof(capability));
@@ -1218,7 +1227,6 @@ static void CANopen_initNetwork(void)
     memset((void*)gSharedMem.txModules, 0, sizeof(gSharedMem.txModules));
     memset((void*)gSharedMem.rxModules, 0, sizeof(gSharedMem.rxModules));
     memset((void*)gSharedMem.nodeData, 0, sizeof(gSharedMem.nodeData));
-    gSharedMem.io.doDirtyMask = 0;
     IPC_Unlock();
 
     DI_NODE_COUNT = 0;
@@ -1306,10 +1314,7 @@ static void CANopen_initNetwork(void)
     {
         if(gSharedMem.modules[i].ioType == DO)
         {
-            gDoNodeMap[
-                gSharedMem.modules[i].doIndex
-            ] =
-                gSharedMem.modules[i].nodeId;
+            gDoNodeMap[gSharedMem.modules[i].doIndex] = gSharedMem.modules[i].nodeId;
         }
     }
 
@@ -1368,8 +1373,10 @@ void mcan_main(void *args)
         vTaskDelay(1);
 #endif
 #if CAN_RX_MODE == CAN_RX_MODE_INTERRUPT
-        CANopen_processOutputs();
+        // CANopen_processOutputs();
         // CANopen_processCommandQueue();
+
+        // ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
         while(gCanRxPending)
         {
@@ -1378,7 +1385,8 @@ void mcan_main(void *args)
             CANopen_processRxFIFO();
         }
 
-        vTaskDelay(1);
+        // vTaskDelay(1);
+        taskYIELD();
 #endif
     }
 }
