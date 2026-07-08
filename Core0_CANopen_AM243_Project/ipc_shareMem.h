@@ -23,7 +23,8 @@
 #define RTDY    7
 #define RTDB    8
 
-#define IPC_NOTIFY_CLIENT_ID  0
+#define IPC_NOTIFY_CLIENT_DO 0
+#define IPC_NOTIFY_CLIENT_AO 1
 
 enum io_device_type
 {

@@ -237,7 +237,17 @@ void GS_APP_SyncInputProcessImage(void)
             case RTDY:
             case RTDB:
             {
-                memcpy(&pWord[offset], (void*)&gSharedMem.io.ai[m->aiIndex * 8], sizeof(int16_t) * 8);
+                DEBUG_LOG("[ECAT] slot=%u node=%u aiIndex=%u offset=%u\n", slot, m->nodeId, m->aiIndex, m->aiIndex * 8);
+
+                for(int i=0;i<8;i++)
+                {
+                    DEBUG_LOG("%d ", gSharedMem.io.ai[m->aiIndex * 8 + i]);
+                }
+
+                DEBUG_LOG("\r\n");
+
+                memcpy(&pWord[offset], (void*)&gSharedMem.io.ai[m->aiIndex * 8], sizeof(int16_t)*8);
+
                 break;
             }
 
@@ -261,7 +271,8 @@ void GS_APP_SyncOutputProcessImage(void)
 {
     uint16_t *pWord = (uint16_t *)pdBuffer_output;
 
-    uint32_t notifyMask = 0;
+    uint32_t doMask = 0;
+    uint32_t aoMask = 0;
 
     IPC_LockIO();
 
@@ -275,7 +286,7 @@ void GS_APP_SyncOutputProcessImage(void)
         {
             case DO:
             {
-                uint16_t idx = m->doIndex;
+                const uint16_t idx = m->doIndex;
 
                 uint16_t newVal = pWord[offset];
 
@@ -283,7 +294,7 @@ void GS_APP_SyncOutputProcessImage(void)
                 {
                     gSharedMem.io.do_[idx] = newVal;
 
-                    notifyMask |= (1UL << idx);
+                    doMask |= (1UL << idx);
                 }
 
                 break;
@@ -292,7 +303,25 @@ void GS_APP_SyncOutputProcessImage(void)
             case AO_C:
             case AO_V:
             {
-                memcpy((void*)&gSharedMem.io.ao[m->aoIndex * 8], &pWord[offset], sizeof(int16_t) * 8);
+                const uint16_t base = m->aoIndex * MAX_ANALOG_CH;
+
+                bool changed = false;
+
+                for(uint8_t i=0;i<MAX_ANALOG_CH;i++)
+                {
+                    int16_t v = (int16_t)pWord[offset+i];
+
+                    if(gSharedMem.io.ao[base+i] != v)
+                    {
+                        gSharedMem.io.ao[base+i] = v;
+                        changed = true;
+                    }
+                }
+
+                if(changed)
+                {
+                    aoMask |= (1UL << (m->aoIndex));
+                }
                 break;
             }
 
@@ -303,9 +332,13 @@ void GS_APP_SyncOutputProcessImage(void)
 
     IPC_UnlockIO();
 
-    if(notifyMask)
+    if(doMask)
     {
-        IpcNotify_sendMsg(CSL_CORE_ID_R5FSS0_0, IPC_NOTIFY_CLIENT_ID, notifyMask, 1);
+        IpcNotify_sendMsg(CSL_CORE_ID_R5FSS0_0, IPC_NOTIFY_CLIENT_DO, doMask, 1);
+    }
+    if(aoMask)
+    {
+        IpcNotify_sendMsg(CSL_CORE_ID_R5FSS0_0, IPC_NOTIFY_CLIENT_AO, aoMask, 1);
     }
 }
 
