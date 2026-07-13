@@ -318,9 +318,12 @@ void GS_APP_SyncOutputProcessImage(void)
                     }
                 }
 
+                DEBUG_LOG("changed=%d\n", changed);
+
                 if(changed)
                 {
                     aoMask |= (1UL << (m->aoIndex));
+                    DEBUG_LOG("AO mask=%08X\n", aoMask);
                 }
                 break;
             }
@@ -330,15 +333,24 @@ void GS_APP_SyncOutputProcessImage(void)
         }
     }
 
+    gSharedMem.io.doNotifyMask |= doMask;
+    gSharedMem.io.aoNotifyMask |= aoMask;
+
     IPC_UnlockIO();
 
-    if(doMask)
+    if(doMask || aoMask)
     {
-        IpcNotify_sendMsg(CSL_CORE_ID_R5FSS0_0, IPC_NOTIFY_CLIENT_DO, doMask, 1);
-    }
-    if(aoMask)
-    {
-        IpcNotify_sendMsg(CSL_CORE_ID_R5FSS0_0, IPC_NOTIFY_CLIENT_AO, aoMask, 1);
+        int32_t status;
+
+        status = IpcNotify_sendMsg(
+                    CSL_CORE_ID_R5FSS0_0,
+                    IPC_NOTIFY_CLIENT,
+                    0,
+                    1);
+
+        DEBUG_LOG(
+            "Notify status=%d\r\n",
+            status);
     }
 }
 

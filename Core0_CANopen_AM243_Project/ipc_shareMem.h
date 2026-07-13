@@ -7,11 +7,13 @@
 
 #define MAX_NODES      20
 #define MAX_ANALOG_CH  8
+#define MAX_RTD_CH 12
 
 #define MAX_DI         MAX_NODES
 #define MAX_DO         MAX_NODES
 #define MAX_AI         (MAX_NODES * MAX_ANALOG_CH)
 #define MAX_AO         (MAX_NODES * MAX_ANALOG_CH)
+#define MAX_RTD        (MAX_NODES * MAX_RTD_CH)
 
 #define UNKNOWN 0
 #define DO      1
@@ -23,8 +25,7 @@
 #define RTDY    7
 #define RTDB    8
 
-#define IPC_NOTIFY_CLIENT_DO 0
-#define IPC_NOTIFY_CLIENT_AO 1
+#define IPC_NOTIFY_CLIENT    0
 
 enum io_device_type
 {
@@ -46,6 +47,10 @@ typedef struct
     int16_t ai[MAX_AI];
     int16_t ao[MAX_AO];
 
+    int16_t rtd[MAX_RTD];
+
+    volatile uint32_t doNotifyMask;
+    volatile uint32_t aoNotifyMask;
     // uint32_t doDirtyMask;
 
 } IO_DataModel;
@@ -64,8 +69,16 @@ typedef struct
 
 typedef struct
 {
+
+} RTD;
+
+typedef struct
+{
     uint16_t digital;
     int16_t analog[8];
+
+    int16_t temperature[6];
+    int16_t resistance[6];
 
     uint8_t ioType;
 

@@ -42,8 +42,6 @@ static SemaphoreHandle_t gTxMutex;
 static uint8_t gDoNodeMap[MAX_NODES];
 static uint8_t gAoNodeMap[MAX_NODES];
 static TaskHandle_t gOutputTaskHandle = NULL;
-static volatile uint32_t gDoNotifyMask = 0;
-static volatile uint32_t gAoNotifyMask = 0;
 
 static uint16_t DI_NODE_COUNT = 0;
 static uint16_t DO_NODE_COUNT = 0;
@@ -58,7 +56,7 @@ static uint32_t gMcanBaseAddr;
 static uint8_t discovered_nodes[MAX_NODES + 1];  // index = nodeId
 static uint8_t node_list[MAX_NODES];
 static uint8_t node_started[MAX_NODES + 1] = {0};
-static uint8_t tpdo_received[MAX_NODES + 1][2];
+static uint8_t tpdo_received[MAX_NODES + 1][4];
 
 static volatile uint8_t sdo_in_progress = 0;
 
@@ -194,20 +192,11 @@ static void App_mcanConfig(void)
 static void ipcNotifyCallback(uint32_t remoteCoreId, uint16_t localClientId, uint32_t msgValue, int32_t crcStatus, void *args)
 {
     BaseType_t hpw = pdFALSE;
-    UBaseType_t savedMask;
 
-    savedMask = taskENTER_CRITICAL_FROM_ISR();
-
-    if(localClientId == IPC_NOTIFY_CLIENT_DO)
-    {
-        gDoNotifyMask |= msgValue;
-    }
-    else if(localClientId == IPC_NOTIFY_CLIENT_AO)
-    {
-        gAoNotifyMask |= msgValue;
-    }
-
-    taskEXIT_CRITICAL_FROM_ISR(savedMask);
+    DEBUG_LOG(
+        "[IPC] notify DO=%08X AO=%08X\r\n",
+        gSharedMem.io.doNotifyMask,
+        gSharedMem.io.aoNotifyMask);
 
     if(gOutputTaskHandle != NULL)
     {
@@ -560,81 +549,96 @@ static void CANopen_OutputTask(void *arg)
     uint16_t doValues[MAX_DO];
     int16_t  aoValues[MAX_AO];
 
-    uint32_t doMask;
-    uint32_t aoMask;
-
     for(;;)
     {
+        uint32_t doMask;
+        uint32_t aoMask;
+
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
-        do
+        IPC_LockIO();
+
+        doMask = gSharedMem.io.doNotifyMask;
+        aoMask = gSharedMem.io.aoNotifyMask;
+
+        gSharedMem.io.doNotifyMask = 0;
+        gSharedMem.io.aoNotifyMask = 0;
+
+        memcpy(doValues,
+               (const void *)gSharedMem.io.do_,
+               sizeof(doValues));
+
+        memcpy(aoValues,
+               (const void *)gSharedMem.io.ao,
+               sizeof(aoValues));
+
+        IPC_UnlockIO();
+
+        DEBUG_LOG(
+            "[CANOUT] DO=%08X AO=%08X\r\n",
+            doMask,
+            aoMask);
+
+        /* ---------------- DO ---------------- */
+
+        while(doMask)
         {
-            taskENTER_CRITICAL();
+            uint32_t bit = __builtin_ctz(doMask);
 
-            doMask = gDoNotifyMask;
-            aoMask = gAoNotifyMask;
+            doMask &= ~(1UL << bit);
 
-            gDoNotifyMask = 0;
-            gAoNotifyMask = 0;
+            if(bit >= MAX_DO)
+                continue;
 
-            taskEXIT_CRITICAL();
+            uint8_t node = gDoNodeMap[bit];
 
-            if((doMask == 0) && (aoMask == 0))
+            if(node == 0)
+                continue;
+
+            DEBUG_LOG(
+                "[CANOUT DO] Node=%u Value=%04X\r\n",
+                node,
+                doValues[bit]);
+
+            CANopen_writeRPDO(
+                node,
+                doValues[bit]);
+        }
+
+        /* ---------------- AO ---------------- */
+
+        while(aoMask)
+        {
+            uint32_t bit = __builtin_ctz(aoMask);
+
+            aoMask &= ~(1UL << bit);
+
+            if(bit >= MAX_NODES)
+                continue;
+
+            uint8_t node = gAoNodeMap[bit];
+
+            if(node == 0)
+                continue;
+
+            DEBUG_LOG(
+                "[CANOUT AO] Node=%u Index=%u\r\n",
+                node,
+                bit);
+
+            for(int i = 0; i < MAX_ANALOG_CH; i++)
             {
-                break;
+                DEBUG_LOG(
+                    "CH%d=%d (0x%04X)\r\n",
+                    i + 1,
+                    aoValues[bit * MAX_ANALOG_CH + i],
+                    (uint16_t)aoValues[bit * MAX_ANALOG_CH + i]);
             }
 
-            IPC_LockIO();
-
-            memcpy(doValues,
-                   (const void *)gSharedMem.io.do_,
-                   sizeof(doValues));
-
-            memcpy(aoValues,
-                   (const void *)gSharedMem.io.ao,
-                   sizeof(aoValues));
-
-            IPC_UnlockIO();
-
-            while(doMask)
-            {
-                uint32_t bit = __builtin_ctz(doMask);
-
-                doMask &= ~(1UL << bit);
-
-                if(bit >= MAX_DO)
-                    continue;
-
-                uint8_t node = gDoNodeMap[bit];
-
-                if(node == 0)
-                    continue;
-
-                CANopen_writeRPDO(
-                    node,
-                    doValues[bit]);
-            }
-
-            while(aoMask)
-            {
-                uint32_t bit = __builtin_ctz(aoMask);
-
-                aoMask &= ~(1UL << bit);
-
-                if(bit >= MAX_NODES)
-                    continue;
-
-                uint8_t node = gAoNodeMap[bit];
-
-                if(node == 0)
-                    continue;
-
-                CANopen_writeRPDO_Analog(
-                    node,
-                    &aoValues[bit * MAX_ANALOG_CH]);
-            }
-
-        } while(gDoNotifyMask || gAoNotifyMask);
+            CANopen_writeRPDO_Analog(
+                node,
+                &aoValues[bit * MAX_ANALOG_CH]);
+        }
     }
 }
 
@@ -673,10 +677,10 @@ static void CANopen_updateDI(uint8_t nid, uint16_t value)
 
     IPC_UnlockIO();
 
-    DEBUG_LOG(
-        "[DI STORE] gIOData.di[%u] = 0x%04X\r\n",
-        m->diIndex,
-        gSharedMem.io.di[m->diIndex]);
+    // DEBUG_LOG(
+    //     "[DI STORE] gIOData.di[%u] = 0x%04X\r\n",
+    //     m->diIndex,
+    //     gSharedMem.io.di[m->diIndex]);
 }
 
 static void CANopen_updateDO(uint8_t nid, uint16_t value)
@@ -720,18 +724,36 @@ static void CANopen_updateAI(uint8_t nid, const int16_t *values)
 
     IPC_UnlockIO();
 
-    DEBUG_LOG(
-        "[AI] Node=%u Offset=%u : %d %d %d %d %d %d %d %d\r\n",
-        nid,
-        offset,
-        dst[0],
-        dst[1],
-        dst[2],
-        dst[3],
-        dst[4],
-        dst[5],
-        dst[6],
-        dst[7]);
+    // DEBUG_LOG(
+    //     "[AI] Node=%u Offset=%u : %d %d %d %d %d %d %d %d\r\n",
+    //     nid,
+    //     offset,
+    //     dst[0],
+    //     dst[1],
+    //     dst[2],
+    //     dst[3],
+    //     dst[4],
+    //     dst[5],
+    //     dst[6],
+    //     dst[7]);
+}
+
+static void CANopen_updateRTD(uint8_t nid, const int16_t *temp, const int16_t *res)
+{
+    volatile CANopenModule *m = findModule(nid);
+
+    if(m == NULL)
+        return;
+
+    uint16_t offset = m->aiIndex * 12;
+
+    IPC_LockIO();
+
+    memcpy((void*)&gSharedMem.io.rtd[offset], temp, sizeof(int16_t) * 6);
+
+    memcpy((void*)&gSharedMem.io.rtd[offset + 6], res, sizeof(int16_t) * 6);
+
+    IPC_UnlockIO();
 }
 
 /* ================= Flush Rx FIFO ================= */
@@ -934,7 +956,7 @@ static void CANopen_autodiscover(uint32_t timeout_per_node_ms)
         uint32_t start = get_time_ms();
         uint8_t found = 0;
 
-        /* 🔥 Trigger node: send NMT (start remote node) */
+        /* Trigger node: send NMT (start remote node) */
         CANopen_sendNMT(0x01, nid);
 
         while ((get_time_ms() - start) < timeout_per_node_ms)
@@ -1063,6 +1085,16 @@ static void CANopen_onTPDO(MCAN_RxBufElement *rxMsg)
         nid = cob - 0x280;
         pdo = 2;
     }
+    else if(cob >= 0x380 && cob <= 0x3FF)
+    {
+        nid = cob - 0x380;
+        pdo = 3;
+    }
+    else if(cob >= 0x480 && cob <= 0x4FF)
+    {
+        nid = cob - 0x480;
+        pdo = 4;
+    }
     else
     {
         return;
@@ -1076,7 +1108,7 @@ static void CANopen_onTPDO(MCAN_RxBufElement *rxMsg)
         case DI:
         {
             uint16_t val = raw[0] | (raw[1] << 8);
-            DEBUG_LOG("[DI] ID %d, Value %d\r\n", nid, val);
+            // DEBUG_LOG("[DI] ID %d, Value %d\r\n", nid, val);
             CANopen_updateDI(nid, val);
 
             break;
@@ -1095,8 +1127,6 @@ static void CANopen_onTPDO(MCAN_RxBufElement *rxMsg)
         case AI_V:
         case AO_C:
         case AO_V:
-        case RTDY:
-        case RTDB:
         {
             if(pdo == 1)
             {
@@ -1123,6 +1153,53 @@ static void CANopen_onTPDO(MCAN_RxBufElement *rxMsg)
 
                 tpdo_received[nid][0] = 0;
                 tpdo_received[nid][1] = 0;
+            }
+
+            break;
+        }
+        case RTDY:
+        case RTDB:
+        {
+            switch(pdo)
+            {
+                case 1:
+
+                    memcpy((void*)&gSharedMem.nodeData[nid].temperature[0], raw, 8);
+
+                    tpdo_received[nid][0]=1;
+
+                    break;
+
+                case 2:
+
+                    memcpy((void*)&gSharedMem.nodeData[nid].temperature[4], raw, 4);
+
+                    tpdo_received[nid][1]=1;
+
+                    break;
+
+                case 3:
+
+                    memcpy((void*)&gSharedMem.nodeData[nid].resistance[0], raw, 8);
+
+                    tpdo_received[nid][2]=1;
+
+                    break;
+
+                case 4:
+
+                    memcpy((void*)&gSharedMem.nodeData[nid].resistance[4], raw, 4);
+
+                    tpdo_received[nid][3]=1;
+
+                    break;
+            }
+
+            if(tpdo_received[nid][0] && tpdo_received[nid][1] && tpdo_received[nid][2] && tpdo_received[nid][3])
+            {
+                CANopen_updateRTD(nid, (void*)gSharedMem.nodeData[nid].temperature, (void*)gSharedMem.nodeData[nid].resistance);
+
+                memset(tpdo_received[nid],0,4);
             }
 
             break;
@@ -1169,12 +1246,15 @@ int32_t CANopen_writeRPDO(uint8_t nodeId, uint16_t value)
     data[0] = value & 0xFF;
     data[1] = value >> 8;
 
-    CANopen_sendFrame(
-        0x200 + nodeId,
-        2,
-        data);
+    int ret = CANopen_sendFrame(0x200 + nodeId, 2, data);
 
-    /* 🔥 UPDATE BOTH */
+    if(ret != 0)
+    {
+        DEBUG_LOG("[RPDO] TX FAILED node=%u ret=%d\r\n", nodeId, ret);
+
+        return ret;
+    }
+    /* UPDATE BOTH */
     gSharedMem.nodeData[nodeId].digital = value;
     CANopen_updateDO(nodeId, value);
 
@@ -1205,6 +1285,13 @@ int32_t CANopen_writeRPDO_Analog(
     uint8_t nodeId,
     int16_t values[8])
 {
+    DEBUG_LOG("\r\n[WRITE RPDO AO] Node=%u\r\n", nodeId);
+
+    for(int i = 0; i < 8; i++)
+    {
+        DEBUG_LOG("CH%u = %d (0x%04X)\r\n", i + 1, values[i], (uint16_t)values[i]);
+    }
+
     uint8_t frame1[8];
     uint8_t frame2[8];
 
@@ -1220,9 +1307,17 @@ int32_t CANopen_writeRPDO_Analog(
         frame2[i*2+1]   = values[i+4] >> 8;
     }
 
-    CANopen_sendFrame(0x200 + nodeId, 8, frame1);
+    int ret;
 
-    CANopen_sendFrame(0x300 + nodeId, 8, frame2);
+    ret = CANopen_sendFrame(0x200 + nodeId, 8, frame1);
+    if(ret != 0)
+        return ret;
+
+    ret = CANopen_sendFrame(0x300 + nodeId, 8, frame2);
+    if(ret != 0)
+        return ret;
+
+    memcpy((void*)gSharedMem.nodeData[nodeId].analog, values, sizeof(int16_t) * 8);
 
     return 0;
 }
@@ -1265,6 +1360,8 @@ static void CANopen_initNetwork(void)
     memset((void*)gSharedMem.txModules, 0, sizeof(gSharedMem.txModules));
     memset((void*)gSharedMem.rxModules, 0, sizeof(gSharedMem.rxModules));
     memset((void*)gSharedMem.nodeData, 0, sizeof(gSharedMem.nodeData));
+    gSharedMem.io.doNotifyMask = 0;
+    gSharedMem.io.aoNotifyMask = 0;
     IPC_Unlock();
 
     DI_NODE_COUNT = 0;
@@ -1364,8 +1461,7 @@ static void CANopen_initNetwork(void)
     IPC_Unlock();
 
     xTaskCreate(CANopen_OutputTask, "CAN_OUT", 4096, NULL, configMAX_PRIORITIES - 1, &gOutputTaskHandle);
-    IpcNotify_registerClient(IPC_NOTIFY_CLIENT_DO, ipcNotifyCallback, NULL);
-    IpcNotify_registerClient(IPC_NOTIFY_CLIENT_AO, ipcNotifyCallback, NULL);
+    IpcNotify_registerClient(IPC_NOTIFY_CLIENT, ipcNotifyCallback, NULL);
 
     DEBUG_LOG("=== CANopen INIT DONE ===\r\n");
 }
